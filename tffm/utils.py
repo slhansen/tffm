@@ -198,15 +198,17 @@ def sigmoid(x):
 
 # Predefined loss functions
 # Should take 2 tf.Ops: outputs and targets and should return tf.Op of loss
-# Be carefull about dimentionality -- maybe tf.transpose(outputs) is needed
+# Be careful about dimensionality -- maybe tf.transpose(outputs) is needed
 
 def loss_logistic(outputs, y):
     margins = -y * tf.transpose(outputs)
     raw_loss = tf.log(tf.add(1.0, tf.exp(margins)))
     return tf.minimum(raw_loss, 100, name='truncated_log_loss')
 
+
 def loss_mse(outputs, y):
-    return tf.pow(y -  tf.transpose(outputs), 2, name='mse_loss')
+    return tf.pow(y - tf.transpose(outputs), 2, name='mse_loss')
+
 
 # Loss function with weights. To use must set parameter use_weights to True.
 # Should take 3 tf.Ops: outputs, targets and weights and should return tf.Op of loss
@@ -217,6 +219,7 @@ def loss_weighted_logistic(outputs, y, s):
     raw_loss_weighted = tf.multiply(s, raw_loss)
     return tf.minimum(raw_loss_weighted, 100, name='truncated_log_weighted_loss')
 
+
 def loss_weighted_mse(outputs, y, s):
-    raw_loss = tf.pow(y -  tf.transpose(outputs), 2)
+    raw_loss = tf.pow(y - tf.transpose(outputs), 2)
     return tf.multiply(s, raw_loss, name='mse_weighted_loss')
