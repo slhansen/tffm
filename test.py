@@ -30,7 +30,8 @@ class TestFM(unittest.TestCase):
                 n_epochs=2,
                 init_std=1.0,
                 seed=0,
-                use_weights=use_weights
+                use_weights=use_weights,
+                verbose=2
             )
         else:
             model = TFFMRegressor(
@@ -40,10 +41,11 @@ class TestFM(unittest.TestCase):
                 n_epochs=2,
                 init_std=1.0,
                 seed=0,
-                use_weights=use_weights
+                use_weights=use_weights,
+                verbose=2,
             )
 
-        model.fit(self.X, self.y, s)
+        model.fit(self.X, self.y, s, X_v=self.X, y_v=self.y)
         w = model.weights
         model.destroy()
         return w

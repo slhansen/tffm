@@ -1,4 +1,5 @@
 import tensorflow as tf
+from numpy import linalg as LA
 from .core import TFFMCore
 from sklearn.base import BaseEstimator
 from abc import ABCMeta, abstractmethod
@@ -6,7 +7,7 @@ import six
 from tqdm import tqdm
 import numpy as np
 import os
-
+from sklearn.metrics import accuracy_score
 
 def batcher(X_, y_=None, s_=None, batch_size=-1):
     """Split data to mini-batches.
@@ -195,7 +196,7 @@ class TFFMBaseModel(six.with_metaclass(ABCMeta, BaseEstimator)):
     def preprocess_target(self, target):
         """Prepare target values to use."""
 
-    def fit(self, X_, y_, s_=None, n_epochs=None, show_progress=False):
+    def fit(self, X_, y_, s_=None, X_v=None, y_v=None, n_epochs=None, show_progress=False):
         if self.core.n_features is None:
             self.core.set_num_features(X_.shape[1])
 
@@ -217,6 +218,14 @@ class TFFMBaseModel(six.with_metaclass(ABCMeta, BaseEstimator)):
         if self.seed:
             np.random.seed(self.seed)
 
+        if self.verbose > 1:
+            if X_v is not None and y_v is not None:
+                # split validation data into pos/neg examples
+                X_v_neg, y_v_neg, X_v_pos, y_v_pos = self.split_pos_neg(X_v, y_v)
+                self.print_stats(-1, X_v_neg, y_v_neg, X_v_pos, y_v_pos)
+            for idx, w in enumerate(self.weights):
+                print('[epoch -1]: weight {}: {:02.3f}'.format(idx, LA.norm(w)))
+
         # Training cycle
         for epoch in tqdm(range(n_epochs), unit='epoch', disable=(not show_progress)):
             # generate permutation
@@ -224,20 +233,76 @@ class TFFMBaseModel(six.with_metaclass(ABCMeta, BaseEstimator)):
             if s_ is not None:
                 s_ = s_[perm]
             epoch_loss = []
+            weight_norm = [[] for x in range(self.core.order)]
+            bias_norm = []
+
             # iterate over batches
             for bX, bY, bS in batcher(X_[perm], y_=used_y[perm], s_=s_, batch_size=self.batch_size):
                 fd = batch_to_feeddict(bX, bY, bS, core=self.core)
                 ops_to_run = [self.core.trainer, self.core.target, self.core.summary_op]
                 result = self.session.run(ops_to_run, feed_dict=fd)
                 _, batch_target_value, summary_str = result
+
+                # record batch loss and weight norms
                 epoch_loss.append(batch_target_value)
-                # write stats 
+                for idx, w in enumerate(self.weights):
+                    weight_norm[idx].append(LA.norm(w))
+                bias_norm.append(LA.norm(self.intercept))
+
+                # write stats
                 if self.need_logs:
                     self.summary_writer.add_summary(summary_str, self.steps)
                     self.summary_writer.flush()
                 self.steps += 1
+
             if self.verbose > 1:
-                    print('[epoch {}]: mean target value: {}'.format(epoch, np.mean(epoch_loss)))
+                if X_v is not None and y_v is not None:
+                    self.print_stats(epoch, X_v_neg, y_v_neg, X_v_pos, y_v_pos)
+                print('[epoch {}]: mean target: {:02.3f}, bias: {:02.3f}'
+                      .format(epoch, np.mean(epoch_loss), np.mean(bias_norm)))
+                for idx, w in enumerate(weight_norm):
+                    print('[epoch {}]: weight {}: {:02.3f}/{:02.3f}'.format(epoch, idx, np.mean(w), np.std(w)))
+
+    def print_stats(self, epoch, X_v_neg, y_v_neg, X_v_pos, y_v_pos):
+        # get accuracy
+        acc_neg = self.get_accuracy(X_v_neg, y_v_neg)
+        acc_pos = self.get_accuracy(X_v_pos, y_v_pos)
+        # get loss
+        loss_neg = self.get_loss(X_v_neg, y_v_neg)
+        loss_pos = self.get_loss(X_v_pos, y_v_pos)
+        # get regularization
+        reg_neg = self.get_regularization(X_v_neg, y_v_neg)
+        reg_pos = self.get_regularization(X_v_pos, y_v_pos)
+        # get learning rate
+        # lr = self.session.run(self.core.optimizer ._lr)
+        # print information
+        print('[epoch {}]: loss: {:02.4e}/{:02.4e}, accuracy: {:02.4e}/{:02.4e}'
+              .format(epoch, loss_neg, loss_pos, acc_neg, acc_pos))
+        print('[epoch {}]: regularization: {:02.4e}/{:02.4e}'.format(epoch, reg_neg, reg_pos))
+
+    def get_loss(self, X_v, y_v):
+        s_v = None
+        if self.core.use_weights:
+            s_v = np.ones_like(y_v) * 1.0 / len(y_v)
+        y_use = y_v * 2 - 1
+        fd = batch_to_feeddict(X_v, y_use, s=s_v, core=self.core)
+        result = self.session.run([self.core.reduced_loss], feed_dict=fd)
+        return result[0]
+
+    def get_regularization(self, X_v, y_v):
+        fd = batch_to_feeddict(X_v, y_v, s=None, core=self.core)
+        result = self.session.run([self.core.regularization], feed_dict=fd)
+        return result[0]
+
+    def get_accuracy(self, X_v, y_v):
+        y_hat = self.decision_function(X_v)
+        predictions = (y_hat > 0).astype(int)
+        return  accuracy_score(y_v, predictions)
+
+    def split_pos_neg(self, X_v, y_v):
+        idx_pos = np.where(y_v > 0)[0]
+        idx_neg = np.where(y_v == 0)[0]
+        return X_v[idx_neg], y_v[idx_neg], X_v[idx_pos], y_v[idx_pos]
 
     def decision_function(self, X, pred_batch_size=None):
         if self.core.graph is None:

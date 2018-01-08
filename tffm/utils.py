@@ -217,7 +217,7 @@ def loss_weighted_logistic(outputs, y, s):
     margins = -y * tf.transpose(outputs)
     raw_loss = tf.log(tf.add(1.0, tf.exp(margins)))
     # reduced_loss (see core.py) uses tf.reduce_mean so multiply by number of elements in tensor
-    normalization = len(s) / tf.reduce_sum(s)
+    normalization = tf.cast(tf.size(s), tf.float32) / tf.reduce_sum(s)
     raw_loss_weighted = tf.multiply(s, raw_loss) * normalization
     return tf.minimum(raw_loss_weighted, 100, name='truncated_log_weighted_loss')
 
@@ -225,5 +225,5 @@ def loss_weighted_logistic(outputs, y, s):
 def loss_weighted_mse(outputs, y, s):
     raw_loss = tf.pow(y - tf.transpose(outputs), 2)
     # reduced_loss (see core.py) uses tf.reduce_mean so multiply by number of elements in tensor
-    normalization = len(s) / tf.reduce_sum(s)
+    normalization = tf.cast(tf.size(s), tf.float32) / tf.reduce_sum(s)
     return tf.multiply(s, raw_loss * normalization, name='mse_weighted_loss')
