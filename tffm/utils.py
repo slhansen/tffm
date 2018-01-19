@@ -6,6 +6,7 @@ from collections import defaultdict
 import numpy as np
 import tensorflow as tf
 
+
 def get_shorter_decompositions(basic_decomposition):
     """Returns all arrays simpler than basic_decomposition.
 

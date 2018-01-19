@@ -13,6 +13,7 @@ from sklearn.metrics import accuracy_score
 
 from .core import TFFMCore
 
+
 def batcher(X_, y_=None, s_=None, batch_size=-1):
     """Split data to mini-batches.
     Parameters
@@ -196,24 +197,11 @@ class TFFMBaseModel(six.with_metaclass(ABCMeta, BaseEstimator)):
     def preprocess_target(self, target):
         """Prepare target values to use."""
 
-    def download_dir_from_gcs(self, gcs_directory):
-        """Download tfrecords in a temp directory"""
-        tmp_path = tempfile.mkdtemp()
-        os.system('gsutil -m -q cp gs://%s/* %s' % (gcs_directory, tmp_path))
-        return tmp_path
-
     def fit(
-        self, train_directory, valid_directory, size_directory, n_epochs=None, show_progress=False
+        self, train_directory, valid_directory, n_epochs=None, show_progress=False
     ):
-        train_tmp_path = self.download_dir_from_gcs(train_directory)
-        valid_tmp_path = self.download_dir_from_gcs(valid_directory)
-        size_tmp_path = self.download_dir_from_gcs(size_directory)
-        train_tfrecords = ['%s/*.tfrecords.deflate' % train_tmp_path]
-        valid_tfrecords = ['%s/*.tfrecords.deflate' % valid_tmp_path]
-
-        # read number of features
-        with open('%s/part-00000-of-00002.txt' % size_tmp_path) as f:
-            self.core.set_num_features(int(f.read()[0:-1]))
+        train_tfrecords = ['%s/*.tfrecords.deflate' % train_directory]
+        valid_tfrecords = ['%s/*.tfrecords.deflate' % valid_directory]
 
         if self.core.graph is None:
             self.core.build_graph()
@@ -269,14 +257,6 @@ class TFFMBaseModel(six.with_metaclass(ABCMeta, BaseEstimator)):
                       .format(epoch, np.mean(epoch_loss), np.mean(bias_norm)))
                 for idx, w in enumerate(weight_norm):
                     print('[epoch {}]: weight {}: {:02.3f}/{:02.3f}'.format(epoch, idx, np.mean(w), np.std(w)))
-
-        # delete downloaded tf records
-        if train_tmp_path is not None:
-            shutil.rmtree(train_tmp_path)
-        if valid_tmp_path is not None:
-            shutil.rmtree(valid_tmp_path)
-        if size_tmp_path is not None:
-            shutil.rmtree(size_tmp_path)
 
     def print_validation_stats(self, epoch, valid_tfrecords):
         loss, reg, acc = self.get_validation_metrics(valid_tfrecords)

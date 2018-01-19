@@ -1,7 +1,6 @@
 import tensorflow as tf
 import math
 from . import utils
-from abc import ABCMeta, abstractmethod
 
 
 class TFFMCore():
@@ -96,14 +95,14 @@ class TFFMCore():
         http://www.csie.ntu.edu.tw/~b97053/paper/Rendle2010FM.pdf
     """
     def __init__(
-        self, order=2, rank=2, input_type='sparse',
+        self, n_features, order=2, rank=2, input_type='sparse',
         loss_function=utils.loss_logistic,
         optimizer=tf.train.AdamOptimizer(learning_rate=0.01),
         batch_size=64, reg=0, init_std=0.01,
         use_diag=False, reweight_reg=False,
-        seed=None, use_weights=False
+        seed=None, use_weights=False, model_type='classifier'
     ):
-        self.n_features = None
+        self.n_features = n_features
         self.order = order
         self.rank = rank
         self.use_diag = use_diag
@@ -116,10 +115,8 @@ class TFFMCore():
         self.init_std = init_std
         self.seed = seed
         self.graph = None
-        self.use_weights=use_weights
-
-    def set_num_features(self, n_features):
-        self.n_features = n_features
+        self.use_weights = use_weights
+        self.model_type = model_type
 
     def init_learnable_params(self):
         self.w = [None] * self.order
@@ -235,9 +232,21 @@ class TFFMCore():
             self.reduced_loss = tf.reduce_mean(self.loss)
             tf.summary.scalar('loss', self.reduced_loss)
 
-    @abstractmethod
     def init_accuracy(self):
-        pass
+        with tf.name_scope('accuracy') as scope:
+            if self.model_type == 'classifier':
+                self.predictions = tf.cast(tf.greater(self.outputs, 0), tf.float32)
+            elif self.model_type == 'regressor':
+                self.predictions = self.outputs
+            else:
+                raise Exception('Unknown model type')
+
+            _, self.accuracy = tf.metrics.accuracy(
+                self.train_y,
+                self.predictions
+            )
+
+            tf.summary.scalar('accuracy', self.accuracy)
 
     def init_target(self):
         with tf.name_scope('target') as scope:

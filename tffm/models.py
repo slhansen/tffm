@@ -1,16 +1,13 @@
 """Implementation of an arbitrary order Factorization Machines."""
-
 import os
 import numpy as np
 import tensorflow as tf
 import shutil
 from tqdm import tqdm
 
-
 from .core import TFFMCore
 from .base import TFFMBaseModel
 from .utils import loss_logistic, loss_mse, loss_weighted_logistic, loss_weighted_mse, sigmoid
-
 
 
 class TFFMClassifier(TFFMBaseModel):
@@ -27,21 +24,13 @@ class TFFMClassifier(TFFMBaseModel):
     def __init__(self, **init_params):
         assert 'loss_function' not in init_params
         use_weights = init_params.get('use_weights', False)
+        init_params['model_type'] = 'classifier'
         if use_weights:
             init_params['loss_function'] = loss_weighted_logistic
         else:
             init_params['loss_function'] = loss_logistic
 
         self.init_basemodel(**init_params)
-
-    def init_accuracy(self):
-        with tf.name_scope('accuracy') as scope:
-            _, self.accuracy = tf.metrics.accuracy(
-                self.train_y,
-                tf.cast(tf.greater(self.outputs, 0), tf.float32)
-            )
-
-            tf.summary.scalar('accuracy', self.accuracy)
 
     def preprocess_target(self, y_):
         return y_
@@ -99,21 +88,13 @@ class TFFMRegressor(TFFMBaseModel):
     def __init__(self, **init_params):
         assert 'loss_function' not in init_params
         use_weights = init_params.get('use_weights', False)
+        init_params['model_type'] = 'regressor'
         if use_weights:
             init_params['loss_function'] = loss_weighted_mse
         else:
             init_params['loss_function'] = loss_mse
 
         self.init_basemodel(**init_params)
-
-    def init_accuracy(self):
-        with tf.name_scope('accuracy') as scope:
-            _, self.accuracy = tf.metrics.accuracy(
-                self.train_y,
-                self.outputs
-            )
-
-            tf.summary.scalar('accuracy', self.accuracy)
 
     def preprocess_target(self, y_):
         return y_
