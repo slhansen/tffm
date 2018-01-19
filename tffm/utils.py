@@ -1,6 +1,4 @@
 """Supporting functions for arbitrary order Factorization Machines."""
-
-
 import itertools
 from itertools import combinations_with_replacement, takewhile, count
 import math
@@ -195,13 +193,12 @@ def count_nonzero_wrapper(X, optype):
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
-
 # Predefined loss functions
 # Should take 2 tf.Ops: outputs and targets and should return tf.Op of loss
 # Be careful about dimensionality -- maybe tf.transpose(outputs) is needed
 
 def loss_logistic(outputs, y):
-    margins = -y * tf.transpose(outputs)
+    margins = - (2 * y - 1) * tf.transpose(outputs)
     raw_loss = tf.log(tf.add(1.0, tf.exp(margins)))
     return tf.minimum(raw_loss, 100, name='truncated_log_loss')
 
@@ -214,7 +211,7 @@ def loss_mse(outputs, y):
 # Should take 3 tf.Ops: outputs, targets and weights and should return tf.Op of loss
 
 def loss_weighted_logistic(outputs, y, s):
-    margins = -y * tf.transpose(outputs)
+    margins = - (2 * y - 1) * tf.transpose(outputs)
     raw_loss = tf.log(tf.add(1.0, tf.exp(margins)))
     # reduced_loss (see core.py) uses tf.reduce_mean so multiply by number of elements in tensor
     normalization = tf.cast(tf.size(s), tf.float32) / tf.reduce_sum(s)

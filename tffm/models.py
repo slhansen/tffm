@@ -31,13 +31,20 @@ class TFFMClassifier(TFFMBaseModel):
             init_params['loss_function'] = loss_weighted_logistic
         else:
             init_params['loss_function'] = loss_logistic
-    
+
         self.init_basemodel(**init_params)
 
+    def init_accuracy(self):
+        with tf.name_scope('accuracy') as scope:
+            _, self.accuracy = tf.metrics.accuracy(
+                self.train_y,
+                tf.cast(tf.greater(self.outputs, 0), tf.float32)
+            )
+
+            tf.summary.scalar('accuracy', self.accuracy)
+
     def preprocess_target(self, y_):
-        # suppose input {0, 1}, but internally will use {-1, 1} labels instead
-        assert(set(y_) == set([0, 1]))
-        return y_ * 2 - 1
+        return y_
 
     def predict(self, X, pred_batch_size=None):
         """Predict using the FM model
@@ -98,6 +105,15 @@ class TFFMRegressor(TFFMBaseModel):
             init_params['loss_function'] = loss_mse
 
         self.init_basemodel(**init_params)
+
+    def init_accuracy(self):
+        with tf.name_scope('accuracy') as scope:
+            _, self.accuracy = tf.metrics.accuracy(
+                self.train_y,
+                self.outputs
+            )
+
+            tf.summary.scalar('accuracy', self.accuracy)
 
     def preprocess_target(self, y_):
         return y_
