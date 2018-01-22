@@ -32,9 +32,6 @@ class TFFMClassifier(TFFMBaseModel):
 
         self.init_basemodel(**init_params)
 
-    def preprocess_target(self, y_):
-        return y_
-
     def predict(self, X, pred_batch_size=None):
         """Predict using the FM model
 
@@ -95,9 +92,6 @@ class TFFMRegressor(TFFMBaseModel):
             init_params['loss_function'] = loss_mse
 
         self.init_basemodel(**init_params)
-
-    def preprocess_target(self, y_):
-        return y_
 
     def predict(self, X, pred_batch_size=None):
         """Predict using the FM model

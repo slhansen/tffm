@@ -193,10 +193,6 @@ class TFFMBaseModel(six.with_metaclass(ABCMeta, BaseEstimator)):
         self.session = tf.Session(config=self.session_config, graph=self.core.graph)
         self.session.run([self.core.init_local_vars, self.core.init_global_vars])
 
-    @abstractmethod
-    def preprocess_target(self, target):
-        """Prepare target values to use."""
-
     def fit(
         self, train_directory, valid_directory, n_epochs=None, show_progress=False
     ):

@@ -12,6 +12,9 @@ class TFFMCore():
 
     Parameters
     ----------
+    n_features : int, required
+        Number of features
+
     order : int, default: 2
         Order of corresponding polynomial model.
         All interaction from bias and linear to order will be included.
@@ -55,6 +58,9 @@ class TFFMCore():
     use_weights: bool, default: False
         Indicates if the training data has corresponding weights
 
+    model_type: str, 'classifier' or 'regressor', default: 'classifier'
+        Indicates the type of model used
+
     Attributes
     ----------
     graph : tf.Graph or None
@@ -62,10 +68,6 @@ class TFFMCore():
 
     trainer : tf.Op
         TensorFlow operation node to perform learning on single batch
-
-    n_features : int
-        Number of features used in this dataset.
-        Inferred during the first call of fit() method.
 
     saver : tf.Op
         tf.train.Saver instance, connected to graph
@@ -144,7 +146,8 @@ class TFFMCore():
         files = tf.data.Dataset.list_files(self.tfrecord_placeholder)
         dataset = files.interleave(
             lambda x: tf.data.TFRecordDataset(x, compression_type="ZLIB").prefetch(10),
-            cycle_length=8
+            cycle_length=8, #preprocess 8 files concurrrently
+            block_length=4 #load 4 examples from each file at a time
         )
         dataset = dataset.shuffle(buffer_size=10000, seed=self.seed)
         dataset = dataset.batch(self.batch_size)
