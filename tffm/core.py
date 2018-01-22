@@ -1,6 +1,6 @@
 import tensorflow as tf
-from . import utils
 import math
+from . import utils
 
 
 class TFFMCore():
@@ -12,6 +12,9 @@ class TFFMCore():
 
     Parameters
     ----------
+    n_features : int, required
+        Number of features
+
     order : int, default: 2
         Order of corresponding polynomial model.
         All interaction from bias and linear to order will be included.
@@ -55,6 +58,9 @@ class TFFMCore():
     use_weights: bool, default: False
         Indicates if the training data has corresponding weights
 
+    model_type: str, 'classifier' or 'regressor', default: 'classifier'
+        Indicates the type of model used
+
     Attributes
     ----------
     graph : tf.Graph or None
@@ -62,10 +68,6 @@ class TFFMCore():
 
     trainer : tf.Op
         TensorFlow operation node to perform learning on single batch
-
-    n_features : int
-        Number of features used in this dataset.
-        Inferred during the first call of fit() method.
 
     saver : tf.Op
         tf.train.Saver instance, connected to graph
@@ -94,25 +96,29 @@ class TFFMCore():
     Steffen Rendle, Factorization Machines
         http://www.csie.ntu.edu.tw/~b97053/paper/Rendle2010FM.pdf
     """
-    def __init__(self, order=2, rank=2, input_type='dense', loss_function=utils.loss_logistic, 
-                optimizer=tf.train.AdamOptimizer(learning_rate=0.01), reg=0, init_std=0.01, 
-                use_diag=False, reweight_reg=False, seed=None, use_weights=False):
+    def __init__(
+        self, n_features, order=2, rank=2, input_type='sparse',
+        loss_function=utils.loss_logistic,
+        optimizer=tf.train.AdamOptimizer(learning_rate=0.01),
+        batch_size=64, reg=0, init_std=0.01,
+        use_diag=False, reweight_reg=False,
+        seed=None, use_weights=False, model_type='classifier'
+    ):
+        self.n_features = n_features
         self.order = order
         self.rank = rank
         self.use_diag = use_diag
         self.input_type = input_type
         self.loss_function = loss_function
         self.optimizer = optimizer
+        self.batch_size = batch_size
         self.reg = reg
         self.reweight_reg = reweight_reg
         self.init_std = init_std
         self.seed = seed
-        self.n_features = None
         self.graph = None
-        self.use_weights=use_weights
-
-    def set_num_features(self, n_features):
-        self.n_features = n_features
+        self.use_weights = use_weights
+        self.model_type = model_type
 
     def init_learnable_params(self):
         self.w = [None] * self.order
@@ -128,17 +134,41 @@ class TFFMCore():
         tf.summary.scalar('bias', self.b)
 
     def init_placeholders(self):
-        if self.input_type == 'dense':
-            self.train_x = tf.placeholder(tf.float32, shape=[None, self.n_features], name='x')
-        else:
-            with tf.name_scope('sparse_placeholders') as scope:
-                self.raw_indices = tf.placeholder(tf.int64, shape=[None, 2], name='raw_indices')
-                self.raw_values = tf.placeholder(tf.float32, shape=[None], name='raw_data')
-                self.raw_shape = tf.placeholder(tf.int64, shape=[2], name='raw_shape')
-            # tf.sparse_reorder is not needed since scipy return COO in canonical order
-            self.train_x = tf.SparseTensor(self.raw_indices, self.raw_values, self.raw_shape)
-        self.train_y = tf.placeholder(tf.float32, shape=[None], name='Y')
-        self.train_s = tf.placeholder_with_default(input=tf.constant([1.0]), shape=[None], name='S')
+        self.tfrecord_placeholder = tf.placeholder(tf.string, shape=[None])
+        self.init_iterator()
+        self.train_x, self.train_y, self.train_s = self.iterator.get_next()
+        with tf.name_scope('sparse_placeholders') as scope:
+            self.raw_indices = self.train_x.indices
+            self.raw_values = self.train_x.values
+            self.raw_shape = self.train_x.dense_shape
+
+    def init_iterator(self):
+        files = tf.data.Dataset.list_files(self.tfrecord_placeholder)
+        dataset = files.interleave(
+            lambda x: tf.data.TFRecordDataset(x, compression_type="ZLIB").prefetch(10),
+            cycle_length=8, #preprocess 8 files concurrrently
+            block_length=4 #load 4 examples from each file at a time
+        )
+        dataset = dataset.shuffle(buffer_size=10000, seed=self.seed)
+        dataset = dataset.batch(self.batch_size)
+        dataset = dataset.map(self.tfrecord_parser)
+
+        self.iterator = dataset.make_initializable_iterator()
+
+    def tfrecord_parser(self, record):
+        features = tf.parse_example(
+          record,
+          features={
+            "sparse_feature": tf.SparseFeature(
+            index_key="indices", value_key="data", dtype=tf.float32, size=self.n_features),
+            "label": tf.VarLenFeature(tf.float32),
+            "weight": tf.VarLenFeature(tf.float32)
+        })
+
+        labels = tf.reshape(tf.sparse_tensor_to_dense(features['label']), [-1])
+        weights = tf.reshape(tf.sparse_tensor_to_dense(features['weight']), [-1])
+
+        return features['sparse_feature'], labels, weights
 
     def pow_matmul(self, order, pow):
         if pow not in self.x_pow_cache:
@@ -205,18 +235,33 @@ class TFFMCore():
             self.reduced_loss = tf.reduce_mean(self.loss)
             tf.summary.scalar('loss', self.reduced_loss)
 
+    def init_accuracy(self):
+        with tf.name_scope('accuracy') as scope:
+            if self.model_type == 'classifier':
+                self.predictions = tf.cast(tf.greater(self.outputs, 0), tf.float32)
+            elif self.model_type == 'regressor':
+                self.predictions = self.outputs
+            else:
+                raise Exception('Unknown model type')
+
+            _, self.accuracy = tf.metrics.accuracy(
+                self.train_y,
+                self.predictions
+            )
+
+            tf.summary.scalar('accuracy', self.accuracy)
+
     def init_target(self):
         with tf.name_scope('target') as scope:
             self.target = self.reduced_loss + self.reg * self.regularization
             self.checked_target = tf.verify_tensor_all_finite(
                 self.target,
-                msg='NaN or Inf in target value', 
+                msg='NaN or Inf in target value',
                 name='target')
             tf.summary.scalar('target', self.checked_target)
 
     def build_graph(self):
         """Build computational graph according to params."""
-        assert self.n_features is not None, 'Number of features is unknown. It can be set explicitly by .core.set_num_features'
         self.graph = tf.Graph()
         self.graph.seed = self.seed
         with self.graph.as_default():
@@ -229,8 +274,10 @@ class TFFMCore():
             with tf.name_scope('optimization_criterion') as scope:
                 self.init_regularization()
                 self.init_loss()
+                self.init_accuracy()
                 self.init_target()
             self.trainer = self.optimizer.minimize(self.checked_target)
-            self.init_all_vars = tf.global_variables_initializer()
+            self.init_global_vars = tf.global_variables_initializer()
+            self.init_local_vars = tf.local_variables_initializer()
             self.summary_op = tf.summary.merge_all()
             self.saver = tf.train.Saver()

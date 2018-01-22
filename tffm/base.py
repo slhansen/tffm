@@ -1,33 +1,33 @@
-import tensorflow as tf
-from numpy import linalg as LA
-from .core import TFFMCore
-from sklearn.base import BaseEstimator
-from abc import ABCMeta, abstractmethod
-import six
-from tqdm import tqdm
 import numpy as np
 import os
+import shutil
+import six
+import tempfile
+import tensorflow as tf
+
+from abc import ABCMeta, abstractmethod
+from numpy import linalg as LA
+from tqdm import tqdm
+from sklearn.base import BaseEstimator
 from sklearn.metrics import accuracy_score
+
+from .core import TFFMCore
+
 
 def batcher(X_, y_=None, s_=None, batch_size=-1):
     """Split data to mini-batches.
-
     Parameters
     ----------
     X_ : {numpy.array, scipy.sparse.csr_matrix}, shape (n_samples, n_features)
         Training vector, where n_samples in the number of samples and
         n_features is the number of features.
-
     y_ : np.array or None, shape (n_samples,)
         Target vector relative to X.
-
     s_ : np.array or None, shape (n_samples,)
         Weight/Scaling vector relative to X.
-
     batch_size : int
         Size of batches.
         Use -1 for full-size batches
-
     Yields
     -------
     ret_x : {numpy.array, scipy.sparse.csr_matrix}, shape (batch_size, n_features)
@@ -166,17 +166,18 @@ class TFFMBaseModel(six.with_metaclass(ABCMeta, BaseEstimator)):
     """
 
 
-    def init_basemodel(self, n_epochs=100, batch_size=-1, log_dir=None, session_config=None, verbose=0, seed=None, **core_arguments):
+    def init_basemodel(
+        self, n_epochs=100, log_dir=None, session_config=None,
+        verbose=0, seed=None, **core_arguments
+    ):
         core_arguments['seed'] = seed
         self.core = TFFMCore(**core_arguments)
-        self.batch_size = batch_size
         self.n_epochs = n_epochs
         self.need_logs = log_dir is not None
         self.log_dir = log_dir
         self.session_config = session_config
         self.verbose = verbose
         self.steps = 0
-        self.seed = seed
 
     def initialize_session(self):
         """Start computational session on builded graph.
@@ -190,119 +191,104 @@ class TFFMBaseModel(six.with_metaclass(ABCMeta, BaseEstimator)):
                 full_log_path = os.path.abspath(self.log_dir)
                 print('Initialize logs, use: \ntensorboard --logdir={}'.format(full_log_path))
         self.session = tf.Session(config=self.session_config, graph=self.core.graph)
-        self.session.run(self.core.init_all_vars)
+        self.session.run([self.core.init_local_vars, self.core.init_global_vars])
 
-    @abstractmethod
-    def preprocess_target(self, target):
-        """Prepare target values to use."""
-
-    def fit(self, X_, y_, s_=None, X_v=None, y_v=None, n_epochs=None, show_progress=False):
-        if self.core.n_features is None:
-            self.core.set_num_features(X_.shape[1])
-
-        assert self.core.n_features==X_.shape[1], 'Different num of features in initialized graph and input'
+    def fit(
+        self, train_directory, valid_directory, n_epochs=None, show_progress=False
+    ):
+        train_tfrecords = ['%s/*.tfrecords.deflate' % train_directory]
+        valid_tfrecords = ['%s/*.tfrecords.deflate' % valid_directory]
 
         if self.core.graph is None:
             self.core.build_graph()
             self.initialize_session()
 
-        if s_ is not None:
-            assert "weighted" in self.core.loss.name, 'Use weighted version of %s by setting parameter use_weights to True' % self.core.loss.name
-
-        used_y = self.preprocess_target(y_)
-
         if n_epochs is None:
             n_epochs = self.n_epochs
 
-        # For reproducible results
-        if self.seed:
-            np.random.seed(self.seed)
-
         if self.verbose > 1:
-            if X_v is not None and y_v is not None:
-                # split validation data into pos/neg examples
-                X_v_neg, y_v_neg, X_v_pos, y_v_pos = self.split_pos_neg(X_v, y_v)
-                self.print_stats(-1, X_v_neg, y_v_neg, X_v_pos, y_v_pos)
             for idx, w in enumerate(self.weights):
                 print('[epoch -1]: weight {}: {:02.3f}'.format(idx, LA.norm(w)))
 
         # Training cycle
         for epoch in tqdm(range(n_epochs), unit='epoch', disable=(not show_progress)):
-            # generate permutation
-            perm = np.random.permutation(X_.shape[0])
-            if s_ is not None:
-                s_ = s_[perm]
+            # initialize iterator and reset accuracy
+            self.session.run(
+                [self.core.iterator.initializer, self.core.init_local_vars],
+                feed_dict={self.core.tfrecord_placeholder: train_tfrecords}
+            )
+
             epoch_loss = []
             weight_norm = [[] for x in range(self.core.order)]
             bias_norm = []
 
             # iterate over batches
-            for bX, bY, bS in batcher(X_[perm], y_=used_y[perm], s_=s_, batch_size=self.batch_size):
-                fd = batch_to_feeddict(bX, bY, bS, core=self.core)
-                ops_to_run = [self.core.trainer, self.core.target, self.core.summary_op]
-                result = self.session.run(ops_to_run, feed_dict=fd)
-                _, batch_target_value, summary_str = result
+            while True:
+                try:
+                    _, batch_target_value, summary_str, _ = self.session.run(
+                        [
+                            self.core.trainer, self.core.target,
+                            self.core.summary_op, self.core.accuracy
+                        ],
+                        feed_dict={self.core.tfrecord_placeholder: train_tfrecords}
+                    )
 
-                # record batch loss and weight norms
-                epoch_loss.append(batch_target_value)
-                for idx, w in enumerate(self.weights):
-                    weight_norm[idx].append(LA.norm(w))
-                bias_norm.append(LA.norm(self.intercept))
+                    # record batch loss and weight norms
+                    epoch_loss.append(batch_target_value)
+                    for idx, w in enumerate(self.weights):
+                        weight_norm[idx].append(LA.norm(w))
+                    bias_norm.append(LA.norm(self.intercept))
 
-                # write stats
-                if self.need_logs:
-                    self.summary_writer.add_summary(summary_str, self.steps)
-                    self.summary_writer.flush()
-                self.steps += 1
+                    # write stats
+                    if self.need_logs:
+                        self.summary_writer.add_summary(summary_str, self.steps)
+                        self.summary_writer.flush()
+                    self.steps += 1
+                except tf.errors.OutOfRangeError:
+                    break
 
             if self.verbose > 1:
-                if X_v is not None and y_v is not None:
-                    self.print_stats(epoch, X_v_neg, y_v_neg, X_v_pos, y_v_pos)
+                self.print_validation_stats(epoch, valid_tfrecords)
                 print('[epoch {}]: mean target: {:02.3f}, bias: {:02.3f}'
                       .format(epoch, np.mean(epoch_loss), np.mean(bias_norm)))
                 for idx, w in enumerate(weight_norm):
                     print('[epoch {}]: weight {}: {:02.3f}/{:02.3f}'.format(epoch, idx, np.mean(w), np.std(w)))
 
-    def print_stats(self, epoch, X_v_neg, y_v_neg, X_v_pos, y_v_pos):
-        # get accuracy
-        acc_neg = self.get_accuracy(X_v_neg, y_v_neg)
-        acc_pos = self.get_accuracy(X_v_pos, y_v_pos)
-        # get loss
-        loss_neg = self.get_loss(X_v_neg, y_v_neg)
-        loss_pos = self.get_loss(X_v_pos, y_v_pos)
-        # get regularization
-        reg_neg = self.get_regularization(X_v_neg, y_v_neg)
-        reg_pos = self.get_regularization(X_v_pos, y_v_pos)
-        # get learning rate
-        # lr = self.session.run(self.core.optimizer ._lr)
-        # print information
-        print('[epoch {}]: loss: {:02.4e}/{:02.4e}, accuracy: {:02.4e}/{:02.4e}'
-              .format(epoch, loss_neg, loss_pos, acc_neg, acc_pos))
-        print('[epoch {}]: regularization: {:02.4e}/{:02.4e}'.format(epoch, reg_neg, reg_pos))
+    def print_validation_stats(self, epoch, valid_tfrecords):
+        loss, reg, acc = self.get_validation_metrics(valid_tfrecords)
+        print('[epoch {}]: loss: {:02.4e}, accuracy: {:02.4e}'
+              .format(epoch, loss, acc))
+        print('[epoch {}]: regularization: {:02.4e}'.format(epoch, reg))
 
-    def get_loss(self, X_v, y_v):
-        s_v = None
-        if self.core.use_weights:
-            s_v = np.ones_like(y_v) * 1.0 / len(y_v)
-        y_use = y_v * 2 - 1
-        fd = batch_to_feeddict(X_v, y_use, s=s_v, core=self.core)
-        result = self.session.run([self.core.reduced_loss], feed_dict=fd)
-        return result[0]
+    def get_validation_metrics(self, valid_tfrecords):
+        # we initialize iterator, and reset accuracy
+        self.session.run(
+            [self.core.iterator.initializer, self.core.init_local_vars],
+            feed_dict={self.core.tfrecord_placeholder: valid_tfrecords}
+        )
 
-    def get_regularization(self, X_v, y_v):
-        fd = batch_to_feeddict(X_v, y_v, s=None, core=self.core)
-        result = self.session.run([self.core.regularization], feed_dict=fd)
-        return result[0]
+        mean_loss = 0
+        mean_regularization = 0
+        mean_accuracy = 0
+        nb_batches = 0
 
-    def get_accuracy(self, X_v, y_v):
-        y_hat = self.decision_function(X_v)
-        predictions = (y_hat > 0).astype(int)
-        return  accuracy_score(y_v, predictions)
+        while True:
+            try:
+                loss, reg, acc = self.session.run(
+                    [self.core.reduced_loss, self.core.regularization, self.core.accuracy],
+                    feed_dict={self.core.tfrecord_placeholder: valid_tfrecords}
+                )
+                mean_loss += loss
+                mean_regularization += reg
+                mean_accuracy += acc
+                nb_batches += 1
+            except tf.errors.OutOfRangeError:
+                mean_loss /= nb_batches
+                mean_regularization /= nb_batches
+                mean_accuracy /= nb_batches
+                break
 
-    def split_pos_neg(self, X_v, y_v):
-        idx_pos = np.where(y_v > 0)[0]
-        idx_neg = np.where(y_v == 0)[0]
-        return X_v[idx_neg], y_v[idx_neg], X_v[idx_pos], y_v[idx_pos]
+        return mean_loss, mean_regularization, mean_accuracy
 
     def decision_function(self, X, pred_batch_size=None):
         if self.core.graph is None:
